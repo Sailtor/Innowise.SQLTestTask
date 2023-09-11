@@ -38,11 +38,11 @@ CREATE TABLE branches
 
 	CONSTRAINT PK_Branch_Id PRIMARY KEY (Id),
 	CONSTRAINT FK_Branch_Bank FOREIGN KEY (BankId) REFERENCES Banks(Id)
-		ON UPDATE CASCADE
+		ON UPDATE NO ACTION
 		ON DELETE NO ACTION,
 	CONSTRAINT FK_Branch_City FOREIGN KEY (CityId) REFERENCES Cities(Id)
-		ON UPDATE CASCADE
-		ON DELETE NO ACTION
+		ON UPDATE NO ACTION
+		ON DELETE NO ACTION,
 )
 CREATE TABLE clients
 (
@@ -53,33 +53,34 @@ CREATE TABLE clients
 
 	CONSTRAINT PK_Client_Id PRIMARY KEY (Id),
 	CONSTRAINT FK_Client_SocialGroup FOREIGN KEY (SocialGroupId) REFERENCES socialGroups(Id)
-		ON UPDATE CASCADE
-		ON DELETE NO ACTION
+		ON UPDATE NO ACTION
+		ON DELETE NO ACTION,
 )
 CREATE TABLE accounts
-(
-	ClientId INT NOT NULL,
-	BankId INT NOT NULL,
-	Balance MONEY NOT NULL,
-
-	CONSTRAINT PK_Account_Id PRIMARY KEY (ClientId, BankId),
-	CONSTRAINT FK_Account_Client FOREIGN KEY (ClientId) REFERENCES clients(Id)
-		ON UPDATE CASCADE
-		ON DELETE NO ACTION,
-	CONSTRAINT FK_Account_Bank FOREIGN KEY (BankId) REFERENCES banks(Id)
-		ON UPDATE CASCADE
-		ON DELETE NO ACTION
-)
-CREATE TABLE cards
 (
 	Id INT IDENTITY,
 	ClientId INT NOT NULL,
 	BankId INT NOT NULL,
 	Balance MONEY NOT NULL,
 
+	CONSTRAINT PK_Account_Id PRIMARY KEY (Id),
+	CONSTRAINT FK_Account_Client FOREIGN KEY (ClientId) REFERENCES clients(Id)
+		ON UPDATE NO ACTION
+		ON DELETE NO ACTION,
+	CONSTRAINT FK_Account_Bank FOREIGN KEY (BankId) REFERENCES banks(Id)
+		ON UPDATE NO ACTION
+		ON DELETE NO ACTION,
+	CONSTRAINT UC_Accounts UNIQUE (ClientId, BankId)
+)
+CREATE TABLE cards
+(
+	Id INT IDENTITY,
+	AccountId INT NOT NULL,
+	Balance MONEY NOT NULL,
+
 	CONSTRAINT PK_Card_Id PRIMARY KEY (Id),
-	CONSTRAINT FK_Card_Account FOREIGN KEY (ClientId, BankId) REFERENCES accounts(ClientId, BankId)
-		ON UPDATE CASCADE
+	CONSTRAINT FK_Card_Account FOREIGN KEY (AccountId) REFERENCES accounts(Id)
+		ON UPDATE NO ACTION
 		ON DELETE NO ACTION,
 )
 GO
@@ -154,48 +155,48 @@ VALUES
 	(5,4,42),
 	(6,3,69420.69),
 	(7,6,9000)
-INSERT INTO cards (ClientId,BankId,Balance)
+INSERT INTO cards (AccountId,Balance)
 VALUES
-	(1,2,500),
-	(1,1,800),
-	(1,1,1100),
-	(1,1,6790.09),
-	(2,5,110),
-	(2,5,90),
-	(2,3,0),
-	(3,4,5),
-	(4,6,0.53),
-	(4,6,0),
-	(4,3,10000),
-	(4,3,900),
-	(6,3,69),
-	(6,3,228),
-	(6,3,69),
-	(7,6,1000),
-	(7,6,800)
+	(1,500),
+	(2,800),
+	(2,1100),
+	(2,6790.09),
+	(4,110),
+	(4,90),
+	(5,0),
+	(6,5),
+	(8,0.53),
+	(8,0),
+	(9,10000),
+	(9,900),
+	(11,69),
+	(11,228),
+	(11,69),
+	(12,1000),
+	(12,800)
 GO
 
 -- Task 2 (city ID = 4)
 SELECT DISTINCT banks.Name
-FROM banks, branches
-WHERE banks.Id = branches.BankId
-	AND branches.CityId = 4
+FROM branches
+	JOIN banks on branches.BankId = banks.Id		
+WHERE branches.CityId = 2
 GO
 
 -- Task 3
 SELECT clients.Name AS ClientName, cards.Balance, banks.Name AS BankName
-FROM cards, clients, banks
-WHERE cards.ClientId = clients.Id
-	AND cards.BankId = banks.Id
+FROM cards
+	JOIN accounts on cards.AccountId = accounts.Id
+	JOIN clients on accounts.ClientId = clients.Id
+	JOIN banks on accounts.BankId = banks.Id
 GO
 
 -- Task 4
-SELECT accounts.ClientId, accounts.BankId, accounts.Balance AS AccountBalance, SUM(cards.Balance) AS CardBalance, accounts.Balance - SUM(cards.Balance) AS Mismatch
+SELECT accounts.Id, accounts.Balance AS AccountBalance, COALESCE(SUM(cards.Balance),0) AS CardsBalance, accounts.Balance - COALESCE(SUM(cards.Balance),0) AS Mismatch
 FROM accounts
-	JOIN cards on accounts.BankId = cards.BankId 
-		AND accounts.ClientId = cards.ClientId
-GROUP BY accounts.ClientId, accounts.BankId, accounts.Balance
-HAVING accounts.Balance - SUM(cards.Balance) > 0
+	LEFT JOIN cards on accounts.Id = cards.AccountId
+GROUP BY accounts.Id, accounts.Balance
+HAVING accounts.Balance - COALESCE(SUM(cards.Balance),0) != 0
 GO
 
 -- Task 5 (using GROUP BY)
@@ -203,21 +204,18 @@ SELECT socialGroups.Id, socialGroups.Name, COUNT(cards.Id) AS CardsCount
 FROM socialGroups
 	LEFT JOIN clients on clients.SocialGroupId = socialGroups.Id
 	LEFT JOIN accounts on accounts.ClientId = clients.Id
-	LEFT JOIN cards on accounts.BankId = cards.BankId 
-		AND accounts.ClientId = cards.ClientId
+	LEFT JOIN cards on cards.AccountId = accounts.Id
 GROUP BY socialGroups.Id, socialGroups.Name
-GO
 
 -- Task 5 (using subquery)
-SELECT socialGroups.Id, socialGroups.Name, (
+SELECT socGroupsHigh.Id, socGroupsHigh.Name, (
 	SELECT COUNT(cards.Id) 
-	FROM cards, accounts, clients
-	WHERE clients.SocialGroupId = socialGroups.Id
-		AND accounts.ClientId = clients.Id
-		AND (accounts.BankId = cards.BankId 
-			AND accounts.ClientId = cards.ClientId)) AS CardsCount
-FROM socialGroups
-GO
+	FROM socialGroups
+		LEFT JOIN clients on clients.SocialGroupId = socialGroups.Id
+		LEFT JOIN accounts on accounts.ClientId = clients.Id
+		LEFT JOIN cards on cards.AccountId = accounts.Id
+	WHERE socialGroups.Id = socGroupsHigh.Id) AS CardsCount
+FROM socialGroups as socGroupsHigh
 
 -- Task 6 
 CREATE PROCEDURE Add10$ToSocGroup 
@@ -229,34 +227,31 @@ BEGIN
 			PRINT 'Invalid social group ID'
 		END;
 	ELSE
-		IF NOT EXISTS (
-			SELECT * 
+		IF NOT EXISTS (SELECT * 
 			FROM socialGroups
 			WHERE socialGroups.Id = @SocGroupId)
 			BEGIN
 				PRINT 'Social group with this ID does not exist'
 			END;
 		ELSE
-		IF NOT EXISTS (
-			SELECT *
+		IF NOT EXISTS (SELECT *
 			FROM clients
 			WHERE clients.SocialGroupId = @SocGroupId)
 			BEGIN
 				PRINT 'No clients of that social group found'
 			END;
 			ELSE
-				IF NOT EXISTS (
-					SELECT *
-					FROM accounts,clients
-					WHERE clients.SocialGroupId = @SocGroupId
-						AND accounts.ClientId = clients.Id)
+				IF NOT EXISTS (SELECT *
+					FROM accounts
+						JOIN clients on accounts.ClientId = clients.Id
+					WHERE clients.SocialGroupId = @SocGroupId)
 					BEGIN
 						PRINT 'No accounts associated with clients of that social group found'
 					END
 				ELSE
 				BEGIN
 					UPDATE accounts
-					SET Balance +=10
+					SET Balance += 10
 					FROM accounts
 						JOIN clients on clients.Id = accounts.ClientId
 					WHERE clients.SocialGroupId = @SocGroupId
@@ -274,66 +269,56 @@ FROM accounts
 GO
 
 -- Task 7
-SELECT accounts.ClientId, accounts.BankId, clients.Name, clients.Surname, accounts.Balance - COALESCE(SUM(cards.Balance),0) AS AvailableFunds
+SELECT accounts.Id, clients.Name, clients.Surname, accounts.Balance - COALESCE(SUM(cards.Balance),0) AS AvailableFunds
 FROM accounts
 	JOIN clients on accounts.ClientId = clients.Id
-	LEFT JOIN cards on cards.ClientId = accounts.ClientId
-		AND cards.BankId = accounts.BankId
-GROUP BY accounts.ClientId, accounts.BankId, clients.Name, clients.Surname, accounts.Balance
+	LEFT JOIN cards on cards.AccountId = accounts.Id
+GROUP BY accounts.Id, clients.Name, clients.Surname, accounts.Balance
 GO
 
 -- Task 8
 CREATE PROCEDURE TransferMoneyToCardFromAcc 
-	@BankId INT,
-	@ClientId INT,
+	@AccountId INT,
 	@CardId INT,
 	@Amount MONEY
 AS
 BEGIN
 	BEGIN TRANSACTION
-	IF @BankId < 1 OR @ClientId < 1 OR @CardId < 1 OR @Amount<=0
+	IF @AccountId < 1 OR @CardId < 1 OR @Amount<=0
 		BEGIN
 			PRINT 'Invalid input'
 			ROLLBACK
 		END;
 	ELSE
-		IF NOT EXISTS (
-			SELECT * 
+		IF NOT EXISTS (SELECT * 
 			FROM accounts
-			WHERE accounts.ClientId = @ClientId
-				AND accounts.BankId = @BankId)
+			WHERE accounts.Id = @AccountId)
 			BEGIN
-				PRINT 'Account with this IDs does not exist'
+				PRINT 'Account with this ID does not exist'
 				ROLLBACK
 			END;
 		ELSE
-			IF NOT EXISTS (
-				SELECT *
+			IF NOT EXISTS (SELECT *
 				FROM cards
 				WHERE cards.Id = @CardId)
 				BEGIN
 					PRINT 'Card with this ID does not exist'
 				END;
 				ELSE
-					IF NOT EXISTS(
-						SELECT * 
+					IF NOT EXISTS (SELECT * 
 						FROM cards
 						WHERE cards.Id = @CardId
-							AND cards.ClientId = @ClientId
-							AND cards.BankId = @BankId)
+							AND cards.AccountId = @AccountId)
 						BEGIN
 							PRINT 'Specified card does not belong to specified account'
 							ROLLBACK
 						END;
 						ELSE
-							IF NOT EXISTS (
-								SELECT accounts.ClientId, accounts.BankId, accounts.Balance
+							IF NOT EXISTS (SELECT accounts.Id, accounts.Balance
 								FROM accounts
-									JOIN cards on accounts.BankId = cards.BankId 
-										AND accounts.ClientId = cards.ClientId
-								WHERE accounts.ClientId = @ClientId 
-									AND accounts.BankId = @BankId
-								GROUP BY accounts.ClientId, accounts.BankId, accounts.Balance
+									JOIN cards on cards.AccountId = accounts.Id
+								WHERE accounts.Id = @AccountId
+								GROUP BY accounts.Id, accounts.Balance
 								HAVING accounts.Balance - SUM(cards.Balance) >= @Amount)
 								BEGIN
 									PRINT 'Not enough money on account to transfer'
@@ -353,7 +338,7 @@ GO
 SELECT cards.Id, cards.Balance
 FROM cards
 
-EXEC TransferMoneyToCardFromAcc 1,1,4,100
+EXEC TransferMoneyToCardFromAcc 4,5,100
 
 SELECT cards.Id, cards.Balance
 FROM cards
@@ -369,16 +354,13 @@ BEGIN
 	SET accounts.Balance = (
 		SELECT inserted.Balance
 		FROM inserted
-		WHERE accounts.BankId = inserted.BankId
-			AND accounts.ClientId = inserted.ClientId)
+		WHERE accounts.Id = inserted.Id)
 	WHERE EXISTS (
 		SELECT *
 		FROM inserted
-			JOIN cards on inserted.BankId = cards.BankId
-				AND inserted.ClientId = cards.ClientId
-		WHERE accounts.BankId = inserted.BankId
-			AND accounts.ClientId = inserted.ClientId
-		GROUP BY inserted.ClientId, inserted.BankId, inserted.Balance
+			JOIN cards on cards.AccountId = inserted.Id
+		WHERE inserted.Id = accounts.Id
+		GROUP BY inserted.Id, inserted.Balance
 		HAVING inserted.Balance - SUM(cards.Balance) >= 0)
 END;
 GO
@@ -410,15 +392,12 @@ BEGIN
 			SELECT SUM(cards.Balance - inserted.Balance) as CardMismatch
 			FROM cards
 				LEFT JOIN inserted on inserted.Id = cards.Id
-			WHERE cards.BankId = accounts.BankId
-				AND cards.ClientId = accounts.ClientId
-			GROUP BY cards.BankId, cards.ClientId) - SUM(cards.Balance)
-	FROM accounts
-		JOIN cards on cards.BankId = accounts.BankId
-			AND cards.ClientId = accounts.ClientId
-	WHERE accounts.BankId = cardsHigh.BankId
-		AND accounts.ClientId = cardsHigh.ClientId
-	GROUP BY accounts.ClientId, accounts.BankId, accounts.Balance) > 0
+			WHERE cards.AccountId = accounts.Id
+			GROUP BY cards.AccountId) - SUM(cards.Balance)
+		FROM accounts
+			JOIN cards on cards.AccountId = accounts.Id
+		WHERE accounts.Id = cardsHigh.AccountId
+		GROUP BY accounts.Id, accounts.Balance) > 0
 END;
 GO
 
