@@ -206,6 +206,7 @@ FROM socialGroups
 	LEFT JOIN accounts on accounts.ClientId = clients.Id
 	LEFT JOIN cards on cards.AccountId = accounts.Id
 GROUP BY socialGroups.Id, socialGroups.Name
+GO
 
 -- Task 5 (using subquery)
 SELECT socGroupsHigh.Id, socGroupsHigh.Name, (
@@ -216,6 +217,7 @@ SELECT socGroupsHigh.Id, socGroupsHigh.Name, (
 		LEFT JOIN cards on cards.AccountId = accounts.Id
 	WHERE socialGroups.Id = socGroupsHigh.Id) AS CardsCount
 FROM socialGroups as socGroupsHigh
+GO
 
 -- Task 6 
 CREATE PROCEDURE Add10$ToSocGroup 
@@ -283,19 +285,17 @@ CREATE PROCEDURE TransferMoneyToCardFromAcc
 	@Amount MONEY
 AS
 BEGIN
-	BEGIN TRANSACTION
 	IF @AccountId < 1 OR @CardId < 1 OR @Amount<=0
 		BEGIN
 			PRINT 'Invalid input'
-			ROLLBACK
 		END;
 	ELSE
+		BEGIN TRANSACTION
 		IF NOT EXISTS (SELECT * 
 			FROM accounts
 			WHERE accounts.Id = @AccountId)
 			BEGIN
 				PRINT 'Account with this ID does not exist'
-				ROLLBACK
 			END;
 		ELSE
 			IF NOT EXISTS (SELECT *
@@ -311,7 +311,6 @@ BEGIN
 							AND cards.AccountId = @AccountId)
 						BEGIN
 							PRINT 'Specified card does not belong to specified account'
-							ROLLBACK
 						END;
 						ELSE
 							IF NOT EXISTS (SELECT accounts.Id, accounts.Balance
@@ -322,16 +321,18 @@ BEGIN
 								HAVING accounts.Balance - SUM(cards.Balance) >= @Amount)
 								BEGIN
 									PRINT 'Not enough money on account to transfer'
-									ROLLBACK
 								END
 							ELSE
-							BEGIN
+							BEGIN TRY
 								UPDATE cards
 								SET Balance += @Amount
 								FROM cards
 								WHERE Id = @CardId
 								COMMIT
-							END;
+							END TRY
+							BEGIN CATCH
+								ROLLBACK
+							END CATCH
 END;
 GO
 
@@ -362,6 +363,11 @@ BEGIN
 		WHERE inserted.Id = accounts.Id
 		GROUP BY inserted.Id, inserted.Balance
 		HAVING inserted.Balance - SUM(cards.Balance) >= 0)
+
+	IF @@ROWCOUNT < (
+		SELECT COUNT(inserted.Id)
+		FROM inserted)
+		PRINT 'Some of the rows were not affected because of the card/account balance issuses'
 END;
 GO
 
@@ -382,22 +388,21 @@ INSTEAD OF UPDATE
 AS
 BEGIN
 	UPDATE cards
-	SET cards.Balance = COALESCE((
-		SELECT inserted.Balance
-		FROM inserted
-		WHERE cardsHigh.Id = inserted.Id), cardsHigh.Balance)
-	FROM cards as cardsHigh
+	SET cards.Balance = insHigh.Balance
+	FROM cards 
+		JOIN inserted as insHigh on cards.Id = insHigh.Id
+		JOIN deleted on deleted.Id = insHigh.Id
 	WHERE (
-		SELECT accounts.Balance + (
-			SELECT SUM(cards.Balance - inserted.Balance) as CardMismatch
-			FROM cards
-				LEFT JOIN inserted on inserted.Id = cards.Id
-			WHERE cards.AccountId = accounts.Id
-			GROUP BY cards.AccountId) - SUM(cards.Balance)
+		SELECT accounts.Balance - SUM(cards.Balance)
 		FROM accounts
 			JOIN cards on cards.AccountId = accounts.Id
-		WHERE accounts.Id = cardsHigh.AccountId
-		GROUP BY accounts.Id, accounts.Balance) > 0
+		WHERE cards.AccountId = insHigh.AccountId
+		GROUP BY accounts.Id, accounts.Balance) >= (insHigh.Balance - deleted.Balance)
+
+	IF @@ROWCOUNT < (
+	SELECT COUNT(inserted.Id)
+	FROM inserted)
+	PRINT 'Some of the rows were not affected because of the card/account balance issuses'
 END;
 GO
 
@@ -405,7 +410,7 @@ SELECT *
 FROM cards
 
 UPDATE cards
-SET Balance += 100
+SET Balance += 600
 WHERE Id = 2 or Id = 9
 
 SELECT * 
