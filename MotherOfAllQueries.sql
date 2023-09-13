@@ -285,61 +285,46 @@ CREATE PROCEDURE TransferMoneyToCardFromAcc
 	@Amount MONEY
 AS
 BEGIN
+	BEGIN TRY
+	BEGIN TRANSACTION
 	IF @AccountId < 1 OR @CardId < 1 OR @Amount<=0
-		BEGIN
-			PRINT 'Invalid input'
-		END;
-	ELSE
-		BEGIN TRANSACTION
-		IF NOT EXISTS (SELECT * 
-			FROM accounts
-			WHERE accounts.Id = @AccountId)
-			BEGIN
-				PRINT 'Account with this ID does not exist'
-			END;
-		ELSE
-			IF NOT EXISTS (SELECT *
-				FROM cards
-				WHERE cards.Id = @CardId)
-				BEGIN
-					PRINT 'Card with this ID does not exist'
-				END;
-				ELSE
-					IF NOT EXISTS (SELECT * 
-						FROM cards
-						WHERE cards.Id = @CardId
-							AND cards.AccountId = @AccountId)
-						BEGIN
-							PRINT 'Specified card does not belong to specified account'
-						END;
-						ELSE
-							IF NOT EXISTS (SELECT accounts.Id, accounts.Balance
-								FROM accounts
-									JOIN cards on cards.AccountId = accounts.Id
-								WHERE accounts.Id = @AccountId
-								GROUP BY accounts.Id, accounts.Balance
-								HAVING accounts.Balance - SUM(cards.Balance) >= @Amount)
-								BEGIN
-									PRINT 'Not enough money on account to transfer'
-								END
-							ELSE
-							BEGIN TRY
-								UPDATE cards
-								SET Balance += @Amount
-								FROM cards
-								WHERE Id = @CardId
-								COMMIT
-							END TRY
-							BEGIN CATCH
-								ROLLBACK
-							END CATCH
+		RAISERROR ('Invalid input', 16, 1);
+	IF NOT EXISTS (SELECT * 
+		FROM cards
+		WHERE cards.Id = @CardId
+			AND cards.AccountId = @AccountId)
+		RAISERROR ('Invalid ID or IDs', 16, 1);
+	IF NOT EXISTS (SELECT accounts.Id, accounts.Balance
+		FROM accounts
+			JOIN cards on cards.AccountId = accounts.Id
+		WHERE accounts.Id = @AccountId
+		GROUP BY accounts.Id, accounts.Balance
+		HAVING accounts.Balance - SUM(cards.Balance) >= @Amount)
+		RAISERROR ('Not enough money on account to transfer', 16, 1);
+	UPDATE cards
+	SET Balance += @Amount
+	FROM cards
+	WHERE Id = @CardId
+	COMMIT
+	END TRY
+	BEGIN CATCH
+		DECLARE @ErrorMessage NVARCHAR(4000);
+		DECLARE @ErrorSeverity INT;
+		DECLARE @ErrorState INT;
+
+		SET @ErrorMessage = ERROR_MESSAGE();
+        SET @ErrorSeverity = ERROR_SEVERITY();
+        SET @ErrorState = ERROR_STATE();
+		RAISERROR (@ErrorMessage, @ErrorSeverity, @ErrorState);
+		ROLLBACK
+	END CATCH
 END;
 GO
 
 SELECT cards.Id, cards.Balance
 FROM cards
 
-EXEC TransferMoneyToCardFromAcc 4,5,100
+EXEC TransferMoneyToCardFromAcc 1, 1, -100
 
 SELECT cards.Id, cards.Balance
 FROM cards
@@ -367,16 +352,18 @@ BEGIN
 	IF @@ROWCOUNT < (
 		SELECT COUNT(inserted.Id)
 		FROM inserted)
-		PRINT 'Some of the rows were not affected because of the card/account balance issuses'
+		THROW 50000, 'Action aborted: incorrect balance', 16;
 END;
 GO
 
 SELECT *
 FROM accounts
+GO
 
 UPDATE accounts
-SET Balance = 500
+SET Balance = 1000
 WHERE accounts.BankId = 6
+GO
 
 SELECT *
 FROM accounts
@@ -402,16 +389,18 @@ BEGIN
 	IF @@ROWCOUNT < (
 	SELECT COUNT(inserted.Id)
 	FROM inserted)
-	PRINT 'Some of the rows were not affected because of the card/account balance issuses'
+	THROW 50000, 'Action aborted: incorrect balance', 16;
 END;
 GO
 
 SELECT * 
 FROM cards
+GO
 
 UPDATE cards
 SET Balance += 600
 WHERE Id = 2 or Id = 9
+GO
 
 SELECT * 
 FROM cards
