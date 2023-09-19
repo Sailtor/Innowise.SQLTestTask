@@ -285,8 +285,8 @@ CREATE PROCEDURE TransferMoneyToCardFromAcc
 	@Amount MONEY
 AS
 BEGIN
+
 	BEGIN TRY
-	BEGIN TRANSACTION
 	IF @AccountId < 1 OR @CardId < 1 OR @Amount<=0
 		RAISERROR ('Invalid input', 16, 1);
 	IF NOT EXISTS (SELECT * 
@@ -301,6 +301,7 @@ BEGIN
 		GROUP BY accounts.Id, accounts.Balance
 		HAVING accounts.Balance - SUM(cards.Balance) >= @Amount)
 		RAISERROR ('Not enough money on account to transfer', 16, 1);
+	BEGIN TRANSACTION
 	UPDATE cards
 	SET Balance += @Amount
 	FROM cards
@@ -316,43 +317,37 @@ BEGIN
         SET @ErrorSeverity = ERROR_SEVERITY();
         SET @ErrorState = ERROR_STATE();
 		RAISERROR (@ErrorMessage, @ErrorSeverity, @ErrorState);
-		ROLLBACK
 	END CATCH
 END;
 GO
 
 SELECT cards.Id, cards.Balance
 FROM cards
+SELECT * from accounts
 
-EXEC TransferMoneyToCardFromAcc 1, 1, -100
+EXEC TransferMoneyToCardFromAcc 1, 1, 100
 
 SELECT cards.Id, cards.Balance
 FROM cards
 GO
 
 --Task 9
-CREATE TRIGGER Accounts_UPDATE
+CREATE TRIGGER Accounts_AFTER_UPDATE
 ON accounts
-INSTEAD OF UPDATE
+AFTER UPDATE
 AS
 BEGIN
-	UPDATE accounts
-	SET accounts.Balance = (
-		SELECT inserted.Balance
-		FROM inserted
-		WHERE accounts.Id = inserted.Id)
-	WHERE EXISTS (
-		SELECT *
-		FROM inserted
-			JOIN cards on cards.AccountId = inserted.Id
-		WHERE inserted.Id = accounts.Id
-		GROUP BY inserted.Id, inserted.Balance
-		HAVING inserted.Balance - SUM(cards.Balance) >= 0)
-
-	IF @@ROWCOUNT < (
-		SELECT COUNT(inserted.Id)
-		FROM inserted)
-		THROW 50000, 'Action aborted: incorrect balance', 16;
+	IF (
+		SELECT COUNT(*)
+		FROM(
+			SELECT inserted.Id as aliasId
+			FROM inserted
+				LEFT JOIN cards on cards.AccountId = inserted.Id
+			GROUP BY inserted.Id, inserted.Balance
+			HAVING (inserted.Balance - COALESCE(SUM(cards.Balance), 0) >= 0)) as alias) < (
+				SELECT COUNT(inserted.Id)
+				FROM inserted)
+		THROW 50000, 'Action aborted: incorrect balance', 16; 
 END;
 GO
 
@@ -361,34 +356,33 @@ FROM accounts
 GO
 
 UPDATE accounts
-SET Balance = 1000
-WHERE accounts.BankId = 6
+SET Balance = 20000,
+	BankId = 5,
+	ClientId = 4
+WHERE accounts.Id = 2
 GO
 
 SELECT *
 FROM accounts
 GO
 
-CREATE TRIGGER Cards_UPDATE
+CREATE TRIGGER Cards_AFTER_UPDATE
 ON cards
-INSTEAD OF UPDATE
+AFTER UPDATE
 AS
 BEGIN
-	UPDATE cards
-	SET cards.Balance = insHigh.Balance
-	FROM cards 
-		JOIN inserted as insHigh on cards.Id = insHigh.Id
-		JOIN deleted on deleted.Id = insHigh.Id
-	WHERE (
-		SELECT accounts.Balance - SUM(cards.Balance)
-		FROM accounts
-			JOIN cards on cards.AccountId = accounts.Id
-		WHERE cards.AccountId = insHigh.AccountId
-		GROUP BY accounts.Id, accounts.Balance) >= (insHigh.Balance - deleted.Balance)
-
-	IF @@ROWCOUNT < (
-	SELECT COUNT(inserted.Id)
-	FROM inserted)
+	IF (
+		SELECT COUNT(*)
+		FROM inserted
+			JOIN deleted on inserted.Id = deleted.Id
+		WHERE (
+			SELECT accounts.Balance - COALESCE(SUM(deleted.Balance), 0)
+			FROM accounts
+				JOIN deleted on deleted.AccountId = accounts.Id
+			WHERE accounts.Id = inserted.AccountId
+			GROUP BY accounts.Id, accounts.Balance) >= (inserted.Balance - deleted.Balance)) < (
+				SELECT COUNT(inserted.Id)
+				FROM inserted)
 	THROW 50000, 'Action aborted: incorrect balance', 16;
 END;
 GO
